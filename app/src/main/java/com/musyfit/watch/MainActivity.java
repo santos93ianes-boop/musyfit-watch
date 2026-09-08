@@ -13,11 +13,12 @@ import android.bluetooth.BluetoothProfile;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanResult;
+import android.content.BroadcastReceiver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -27,30 +28,28 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.MediaStore;
 import android.util.Base64;
+import android.view.Gravity;
+import android.widget.TextView;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
-import com.google.zxing.BarcodeFormat;
-import com.google.zxing.MultiFormatWriter;
-import com.google.zxing.common.BitMatrix;
-import com.google.zxing.integration.android.IntentIntegrator;
-import com.google.zxing.integration.android.IntentResult;
-
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Method;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 public class MainActivity extends Activity {
     private static final int REQ_FILE = 77;
     private static final int REQ_BT = 101;
-    private static final int REQ_STORAGE = 102;
     private static final UUID BATTERY_SERVICE = UUID.fromString("0000180f-0000-1000-8000-00805f9b34fb");
     private static final UUID BATTERY_LEVEL = UUID.fromString("00002a19-0000-1000-8000-00805f9b34fb");
 
@@ -59,30 +58,52 @@ public class MainActivity extends Activity {
     private BluetoothAdapter btAdapter;
     private BluetoothLeScanner scanner;
     private BluetoothGatt gatt;
+    private BluetoothDevice currentDevice;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Map<String, BluetoothDevice> devices = new HashMap<>();
+    private final Set<String> emitted = new HashSet<>();
     private boolean scanning = false;
     private boolean connecting = false;
     private boolean connected = false;
+    private boolean retried133 = false;
     private String currentName = "";
     private String currentAddress = "";
 
     private final Runnable connectTimeout = () -> {
-        if (connecting || !connected) {
-            js("onBtConnectionFailed", "Tempo esgotado. O Android não conseguiu validar uma sessão Bluetooth com este relógio.");
+        if (connecting && !connected) {
+            js("onBtConnectionFailed", "Tempo esgotado. Reinicie o Bluetooth do relógio e tente novamente.");
             safeCloseGatt();
+        }
+    };
+
+    private final BroadcastReceiver bondReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (!BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(intent.getAction())) return;
+            BluetoothDevice d = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+            if (d == null || !isT800(safeName(d))) return;
+            int state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
+            if (state == BluetoothDevice.BOND_BONDED) js("onPairState", "Pareamento Android concluído.", "bonded");
+            else if (state == BluetoothDevice.BOND_BONDING) js("onPairState", "Confirme o pareamento no relógio/celular.", "bonding");
+            else js("onPairState", "Relógio não está pareado no Android.", "none");
         }
     };
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
         try {
+            registerReceiverCompat();
+            BluetoothManager bm = (BluetoothManager)getSystemService(Context.BLUETOOTH_SERVICE);
+            btAdapter = bm != null ? bm.getAdapter() : null;
+
             webView = new WebView(this);
             setContentView(webView);
-            webView.getSettings().setJavaScriptEnabled(true);
-            webView.getSettings().setDomStorageEnabled(true);
-            webView.getSettings().setAllowFileAccess(true);
-            webView.getSettings().setAllowContentAccess(true);
+            WebSettings s = webView.getSettings();
+            s.setJavaScriptEnabled(true);
+            s.setDomStorageEnabled(true);
+            s.setAllowFileAccess(true);
+            s.setAllowContentAccess(true);
+            s.setCacheMode(WebSettings.LOAD_NO_CACHE);
+            webView.setBackgroundColor(Color.rgb(2,8,17));
             webView.setWebViewClient(new WebViewClient());
             webView.addJavascriptInterface(new Bridge(), "MusyFitBridge");
             webView.setWebChromeClient(new WebChromeClient() {
@@ -95,18 +116,33 @@ public class MainActivity extends Activity {
                         i.setType("image/*");
                         startActivityForResult(i, REQ_FILE);
                         return true;
-                    } catch (Exception e) {
+                    } catch (Throwable e) {
                         chooser = null;
                         return false;
                     }
                 }
             });
-            BluetoothManager bm = (BluetoothManager)getSystemService(Context.BLUETOOTH_SERVICE);
-            btAdapter = bm != null ? bm.getAdapter() : null;
             webView.loadUrl("file:///android_asset/index.html");
         } catch (Throwable t) {
-            finish();
+            showFatal("MusyFit Watch não conseguiu iniciar.\n\n" + t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage()));
         }
+    }
+
+    private void registerReceiverCompat() {
+        IntentFilter f = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(bondReceiver, f, Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(bondReceiver, f);
+    }
+
+    private void showFatal(String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextColor(Color.WHITE);
+        tv.setBackgroundColor(Color.rgb(5,15,28));
+        tv.setTextSize(18f);
+        tv.setGravity(Gravity.CENTER);
+        tv.setPadding(36,36,36,36);
+        setContentView(tv);
     }
 
     private boolean hasBtPermissions() {
@@ -130,71 +166,120 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder("javascript:").append(function).append("(");
         for (int i = 0; i < args.length; i++) {
             if (i > 0) sb.append(',');
-            String s = args[i] == null ? "" : args[i];
-            sb.append('"').append(s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "")).append('"');
+            String v = args[i] == null ? "" : args[i];
+            sb.append('"').append(v.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "")).append('"');
         }
         sb.append(')');
         runOnUiThread(() -> {
-            try {
-                if (!isFinishing() && webView != null) webView.evaluateJavascript(sb.toString(), null);
-            } catch (Throwable ignored) {}
+            try { if (!isFinishing() && webView != null) webView.evaluateJavascript(sb.toString(), null); }
+            catch (Throwable ignored) {}
         });
     }
 
     private String safeName(BluetoothDevice d) {
         try {
-            if (d != null && hasBtPermissions() && d.getName() != null) return d.getName();
+            if (d != null && hasBtPermissions()) {
+                String n = d.getName();
+                return n == null ? "" : n;
+            }
         } catch (Throwable ignored) {}
         return "";
     }
 
-    private String profileFor(String name) {
-        String n = name == null ? "" : name.toLowerCase(Locale.ROOT);
-        if (n.contains("t800") || n.contains("ultra2") || n.contains("ultra 2")) return "T800 Ultra2";
-        if (n.contains("redmi") || n.contains("watch 5 active") || n.contains("m2460")) return "Redmi Watch 5 Active";
-        return "Outro relógio BLE";
+    private boolean isT800(String name) {
+        String n = name == null ? "" : name.toLowerCase(Locale.ROOT).replace(" ", "");
+        return n.contains("t800ultra2") || n.contains("t800ultra") || n.equals("t800") || n.contains("ultra2");
+    }
+
+    private void emitDevice(BluetoothDevice d, int rssi, String source) {
+        if (d == null) return;
+        String name = safeName(d);
+        if (!isT800(name)) return;
+        String addr;
+        try { addr = d.getAddress(); } catch (Throwable e) { return; }
+        devices.put(addr, d);
+        if (!emitted.add(addr)) return;
+        int bond = BluetoothDevice.BOND_NONE;
+        try { if (hasBtPermissions()) bond = d.getBondState(); } catch (Throwable ignored) {}
+        js("onBtDevice", name.isEmpty() ? "T800 Ultra2" : name, addr, String.valueOf(rssi), source, bond == BluetoothDevice.BOND_BONDED ? "Pareado" : "Não pareado");
+    }
+
+    private void emitBondedT800() {
+        if (btAdapter == null || !hasBtPermissions()) return;
+        try {
+            Set<BluetoothDevice> bonded = btAdapter.getBondedDevices();
+            if (bonded != null) for (BluetoothDevice d : bonded) emitDevice(d, 0, "Android");
+        } catch (Throwable ignored) {}
     }
 
     private final ScanCallback scanCallback = new ScanCallback() {
         @Override public void onScanResult(int callbackType, ScanResult result) {
             if (result == null || result.getDevice() == null) return;
             BluetoothDevice d = result.getDevice();
-            String addr;
-            try { addr = d.getAddress(); } catch (Throwable e) { return; }
             String name = safeName(d);
-            if (name.isEmpty() && result.getScanRecord() != null && result.getScanRecord().getDeviceName() != null) {
-                name = result.getScanRecord().getDeviceName();
+            if (name.isEmpty() && result.getScanRecord() != null) {
+                String recordName = result.getScanRecord().getDeviceName();
+                if (recordName != null) name = recordName;
             }
-            devices.put(addr, d);
-            js("onBtDevice", name, addr, String.valueOf(result.getRssi()), profileFor(name));
+            if (!isT800(name)) return;
+            try { devices.put(d.getAddress(), d); } catch (Throwable ignored) {}
+            emitDevice(d, result.getRssi(), "BLE");
         }
         @Override public void onScanFailed(int errorCode) {
             scanning = false;
-            js("onBtScanFailed", "Falha na busca Bluetooth (código " + errorCode + "). Reinicie o Bluetooth e tente novamente.");
+            js("onBtScanFailed", "Falha na busca BLE (código " + errorCode + "). Desligue e ligue o Bluetooth do celular.");
         }
     };
+
+    private void connectGattNow(BluetoothDevice d) {
+        if (d == null) { js("onBtConnectionFailed", "T800 Ultra2 não encontrado."); return; }
+        currentDevice = d;
+        currentName = safeName(d);
+        try { currentAddress = d.getAddress(); } catch (Throwable e) { currentAddress = ""; }
+        connecting = true;
+        connected = false;
+        handler.removeCallbacks(connectTimeout);
+        js("onBtConnecting", currentName.isEmpty() ? "T800 Ultra2" : currentName, currentAddress);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) gatt = d.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
+            else gatt = d.connectGatt(this, false, gattCallback);
+            handler.postDelayed(connectTimeout, 20000);
+        } catch (Throwable e) {
+            connecting = false;
+            js("onBtConnectionFailed", "Android não conseguiu abrir a conexão BLE: " + e.getClass().getSimpleName());
+        }
+    }
+
+    private void retryAfter133(BluetoothDevice d) {
+        if (retried133 || d == null) return;
+        retried133 = true;
+        js("onBtRetry", "O Android retornou GATT 133. Tentando novamente uma vez…");
+        BluetoothGatt old = gatt; gatt = null;
+        try { if (old != null) { refreshDeviceCache(old); old.close(); } } catch (Throwable ignored) {}
+        handler.postDelayed(() -> connectGattNow(d), 1400);
+    }
 
     private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
         @Override public void onConnectionStateChange(BluetoothGatt g, int status, int newState) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                connecting = false; connected = false;
                 handler.removeCallbacks(connectTimeout);
-                js("onBtConnectionFailed", "Conexão recusada/encerrada pelo relógio. Erro GATT " + status + ".");
+                connecting = false; connected = false;
+                if (status == 133 && !retried133) { retryAfter133(currentDevice); return; }
+                js("onBtConnectionFailed", "O T800 recusou/encerrou a conexão. Erro GATT " + status + ". Feche o HIwatch Pro e tente novamente.");
                 try { g.close(); } catch (Throwable ignored) {}
                 if (gatt == g) gatt = null;
                 return;
             }
             if (newState == BluetoothProfile.STATE_CONNECTED) {
-                connecting = false;
-                js("onBtTransportConnected", currentName, profileFor(currentName));
+                js("onBtTransportConnected", currentName.isEmpty() ? "T800 Ultra2" : currentName);
                 try {
                     if (hasBtPermissions() && g.discoverServices()) return;
                 } catch (Throwable ignored) {}
-                js("onBtConnectionFailed", "Bluetooth conectou, mas a descoberta de serviços não iniciou.");
+                js("onBtConnectionFailed", "Bluetooth conectou, mas o T800 não iniciou a leitura dos serviços.");
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                connecting = false; connected = false;
                 handler.removeCallbacks(connectTimeout);
-                js("onBtDisconnected", "Relógio desconectado.");
+                connecting = false; connected = false;
+                js("onBtDisconnected", "T800 Ultra2 desconectado.");
                 try { g.close(); } catch (Throwable ignored) {}
                 if (gatt == g) gatt = null;
             }
@@ -202,27 +287,29 @@ public class MainActivity extends Activity {
 
         @Override public void onServicesDiscovered(BluetoothGatt g, int status) {
             handler.removeCallbacks(connectTimeout);
+            connecting = false;
             if (status != BluetoothGatt.GATT_SUCCESS || g.getServices() == null || g.getServices().isEmpty()) {
                 connected = false;
-                js("onBtConnectionFailed", "Sessão Bluetooth aberta, porém sem serviços GATT acessíveis.");
+                js("onBtConnectionFailed", "Conexão BLE aberta, porém o T800 não expôs serviços GATT.");
                 return;
             }
             int services = 0, chars = 0, writable = 0, notify = 0;
             StringBuilder uuids = new StringBuilder();
             for (BluetoothGattService s : g.getServices()) {
                 services++;
-                if (uuids.length() < 1800) uuids.append("S ").append(s.getUuid()).append("\n");
+                if (uuids.length() < 5000) uuids.append("S ").append(s.getUuid()).append("\n");
                 for (BluetoothGattCharacteristic c : s.getCharacteristics()) {
                     chars++;
                     int p = c.getProperties();
                     if ((p & (BluetoothGattCharacteristic.PROPERTY_WRITE | BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0) writable++;
                     if ((p & (BluetoothGattCharacteristic.PROPERTY_NOTIFY | BluetoothGattCharacteristic.PROPERTY_INDICATE)) != 0) notify++;
-                    if (uuids.length() < 1800) uuids.append("  C ").append(c.getUuid()).append(" p=").append(p).append("\n");
+                    if (uuids.length() < 5000) uuids.append("  C ").append(c.getUuid()).append(" p=").append(p).append("\n");
                 }
             }
             connected = true;
-            js("onBtReady", currentName, profileFor(currentName), String.valueOf(services), String.valueOf(chars), String.valueOf(writable), String.valueOf(notify), uuids.toString().trim());
+            js("onBtReady", currentName.isEmpty() ? "T800 Ultra2" : currentName, String.valueOf(services), String.valueOf(chars), String.valueOf(writable), String.valueOf(notify), uuids.toString().trim());
             try {
+                if (Build.VERSION.SDK_INT >= 21 && hasBtPermissions()) g.requestMtu(247);
                 BluetoothGattService battery = g.getService(BATTERY_SERVICE);
                 if (battery != null) {
                     BluetoothGattCharacteristic level = battery.getCharacteristic(BATTERY_LEVEL);
@@ -231,25 +318,22 @@ public class MainActivity extends Activity {
             } catch (Throwable ignored) {}
         }
 
-        @Override public void onCharacteristicRead(BluetoothGatt g, BluetoothGattCharacteristic characteristic, int status) {
-            if (status == BluetoothGatt.GATT_SUCCESS && BATTERY_LEVEL.equals(characteristic.getUuid())) {
+        @Override public void onCharacteristicRead(BluetoothGatt g, BluetoothGattCharacteristic c, int status) {
+            if (status == BluetoothGatt.GATT_SUCCESS && BATTERY_LEVEL.equals(c.getUuid())) {
                 try {
-                    Integer v = characteristic.getIntValue(BluetoothGattCharacteristic.FORMAT_UINT8, 0);
+                    Integer v = c.getIntValue(BluetoothGattCharacteristic.FORMAT_UINT8, 0);
                     if (v != null) js("onBattery", String.valueOf(v));
                 } catch (Throwable ignored) {}
             }
         }
     };
 
-    private void safeCloseGatt() {
-        handler.removeCallbacks(connectTimeout);
-        connecting = false; connected = false;
-        BluetoothGatt local = gatt; gatt = null;
-        if (local != null) {
-            try { if (hasBtPermissions()) local.disconnect(); } catch (Throwable ignored) {}
-            try { local.close(); } catch (Throwable ignored) {}
-        }
-        currentName = ""; currentAddress = "";
+    private void refreshDeviceCache(BluetoothGatt g) {
+        try {
+            Method m = g.getClass().getMethod("refresh");
+            m.setAccessible(true);
+            m.invoke(g);
+        } catch (Throwable ignored) {}
     }
 
     private void stopScanInternal() {
@@ -259,14 +343,27 @@ public class MainActivity extends Activity {
         scanning = false;
     }
 
+    private void safeCloseGatt() {
+        handler.removeCallbacks(connectTimeout);
+        connecting = false; connected = false;
+        BluetoothGatt local = gatt; gatt = null;
+        if (local != null) {
+            try { if (hasBtPermissions()) local.disconnect(); } catch (Throwable ignored) {}
+            try { local.close(); } catch (Throwable ignored) {}
+        }
+        currentDevice = null;
+        currentName = "";
+        currentAddress = "";
+        retried133 = false;
+    }
+
     private boolean savePngDataUrl(String dataUrl, String filename) {
         if (dataUrl == null || !dataUrl.contains(",")) return false;
         try {
             String base64 = dataUrl.substring(dataUrl.indexOf(',') + 1);
             byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
-            String safe = (filename == null || filename.trim().isEmpty()) ? "MusyFit-Watch.png" : filename.replaceAll("[^a-zA-Z0-9._-]", "-");
+            String safe = (filename == null || filename.trim().isEmpty()) ? "MusyFit-T800.png" : filename.replaceAll("[^a-zA-Z0-9._-]", "-");
             if (!safe.toLowerCase(Locale.ROOT).endsWith(".png")) safe += ".png";
-
             ContentValues cv = new ContentValues();
             cv.put(MediaStore.Images.Media.DISPLAY_NAME, safe);
             cv.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
@@ -290,15 +387,6 @@ public class MainActivity extends Activity {
         } catch (Throwable e) { return false; }
     }
 
-    private void openPackageOrStore(String pkg) {
-        try {
-            Intent launch = getPackageManager().getLaunchIntentForPackage(pkg);
-            if (launch != null) { startActivity(launch); return; }
-        } catch (Throwable ignored) {}
-        try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + pkg))); }
-        catch (Throwable e) { js("onExternalAppError", "Não foi possível abrir o aplicativo companheiro."); }
-    }
-
     public class Bridge {
         @JavascriptInterface public void requestPermissions() { runOnUiThread(MainActivity.this::requestBtPermissions); }
         @JavascriptInterface public String bluetoothState() {
@@ -308,88 +396,63 @@ public class MainActivity extends Activity {
         }
         @JavascriptInterface public void startScan() {
             runOnUiThread(() -> {
-                if (!hasBtPermissions()) { requestBtPermissions(); js("onBtStatus", "Autorize Bluetooth e tente novamente."); return; }
+                if (!hasBtPermissions()) { requestBtPermissions(); js("onBtStatus", "Autorize Bluetooth e toque em Buscar T800 novamente."); return; }
                 if (btAdapter == null || !btAdapter.isEnabled()) { js("onBtStatus", "Ative o Bluetooth do celular."); return; }
-                stopScanInternal(); devices.clear();
+                stopScanInternal(); safeCloseGatt(); devices.clear(); emitted.clear();
+                emitBondedT800();
                 scanner = btAdapter.getBluetoothLeScanner();
-                if (scanner == null) { js("onBtScanFailed", "Scanner BLE indisponível."); return; }
+                if (scanner == null) { js("onBtScanFailed", "Busca BLE indisponível neste celular."); return; }
                 scanning = true;
                 try { scanner.startScan(scanCallback); }
                 catch (Throwable e) { scanning = false; js("onBtScanFailed", "Não foi possível iniciar a busca BLE."); return; }
-                js("onBtScanning", "Buscando Redmi Watch 5 Active, T800 Ultra2 e outros dispositivos BLE…");
-                handler.postDelayed(() -> { stopScanInternal(); js("onBtScanFinished", String.valueOf(devices.size())); }, 12000);
+                js("onBtScanning", "Procurando somente T800 Ultra2…");
+                handler.postDelayed(() -> { stopScanInternal(); js("onBtScanFinished", String.valueOf(devices.size())); }, 15000);
             });
         }
         @JavascriptInterface public void connect(String address) {
             runOnUiThread(() -> {
                 if (!hasBtPermissions()) { requestBtPermissions(); return; }
-                if (address == null || address.trim().isEmpty()) { js("onBtConnectionFailed", "Endereço Bluetooth inválido."); return; }
                 BluetoothDevice d = devices.get(address);
                 if (d == null && btAdapter != null) {
                     try { d = btAdapter.getRemoteDevice(address); } catch (Throwable ignored) {}
                 }
-                if (d == null) { js("onBtConnectionFailed", "Dispositivo não encontrado. Faça uma nova busca."); return; }
-                stopScanInternal(); safeCloseGatt();
-                currentName = safeName(d); currentAddress = address;
-                connecting = true; connected = false;
-                js("onBtConnecting", currentName, address, profileFor(currentName));
+                if (d == null || !isT800(safeName(d))) { js("onBtConnectionFailed", "Esse dispositivo não foi identificado como T800 Ultra2."); return; }
+                stopScanInternal();
+                BluetoothGatt old = gatt; gatt = null;
+                if (old != null) { try { old.close(); } catch (Throwable ignored) {} }
+                retried133 = false;
+                connectGattNow(d);
+            });
+        }
+        @JavascriptInterface public void pair(String address) {
+            runOnUiThread(() -> {
+                if (!hasBtPermissions()) { requestBtPermissions(); return; }
+                BluetoothDevice d = devices.get(address);
+                if (d == null && btAdapter != null) { try { d = btAdapter.getRemoteDevice(address); } catch (Throwable ignored) {} }
+                if (d == null) { js("onPairState", "T800 não encontrado. Faça nova busca.", "none"); return; }
                 try {
-                    gatt = d.connectGatt(MainActivity.this, false, gattCallback, BluetoothDevice.TRANSPORT_LE);
-                    handler.postDelayed(connectTimeout, 18000);
-                } catch (Throwable e) { connecting = false; js("onBtConnectionFailed", "O Android não conseguiu abrir a sessão GATT."); }
+                    if (d.getBondState() == BluetoothDevice.BOND_BONDED) { js("onPairState", "T800 já está pareado no Android.", "bonded"); return; }
+                    boolean ok = d.createBond();
+                    js("onPairState", ok ? "Pareamento iniciado. Confirme no relógio/celular." : "O Android não iniciou o pareamento.", ok ? "bonding" : "none");
+                } catch (Throwable e) { js("onPairState", "Falha ao iniciar pareamento: " + e.getClass().getSimpleName(), "none"); }
             });
         }
         @JavascriptInterface public void disconnect() { runOnUiThread(() -> { safeCloseGatt(); js("onBtDisconnected", "Desconectado."); }); }
-        @JavascriptInterface public void scanQr() {
-            runOnUiThread(() -> {
-                try {
-                    IntentIntegrator integrator = new IntentIntegrator(MainActivity.this);
-                    integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
-                    integrator.setPrompt("Aponte para o QR Code"); integrator.setBeepEnabled(false); integrator.setOrientationLocked(false);
-                    integrator.initiateScan();
-                } catch (Throwable e) { js("onQrError", "Não foi possível abrir o leitor de QR."); }
-            });
-        }
-        @JavascriptInterface public String generateQr(String text) {
-            if (text == null || text.trim().isEmpty()) return "";
-            try {
-                int size = 420; BitMatrix matrix = new MultiFormatWriter().encode(text, BarcodeFormat.QR_CODE, size, size);
-                Bitmap bmp = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565); int[] pixels = new int[size * size];
-                for (int y = 0; y < size; y++) for (int x = 0; x < size; x++) pixels[y * size + x] = matrix.get(x, y) ? Color.BLACK : Color.WHITE;
-                bmp.setPixels(pixels, 0, size, 0, 0, size, size);
-                ByteArrayOutputStream out = new ByteArrayOutputStream(); bmp.compress(Bitmap.CompressFormat.PNG, 100, out);
-                return "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
-            } catch (Throwable e) { return ""; }
-        }
         @JavascriptInterface public void savePng(String dataUrl, String filename) {
             runOnUiThread(() -> {
                 boolean ok = savePngDataUrl(dataUrl, filename);
-                if (ok) js("onImageSaved", "Imagem salva em Fotos > MusyFit Watch.");
-                else js("onImageSaveError", "Não foi possível salvar a imagem.");
+                js(ok ? "onImageSaved" : "onImageSaveError", ok ? "Imagem salva em Fotos > MusyFit Watch." : "Não foi possível salvar a imagem.");
             });
         }
-        @JavascriptInterface public void openCompanion(String profile) {
-            runOnUiThread(() -> {
-                if (profile != null && profile.toLowerCase(Locale.ROOT).contains("t800")) openPackageOrStore("com.legend.hiwatchpro.app");
-                else openPackageOrStore("com.xiaomi.wearable");
-            });
-        }
-        @JavascriptInterface public String appVersion() { return "3.0"; }
+        @JavascriptInterface public String appVersion() { return "3.1"; }
     }
 
     @Override public void onRequestPermissionsResult(int req, String[] permissions, int[] grants) {
         super.onRequestPermissionsResult(req, permissions, grants);
-        if (req == REQ_BT) js("onBtStatus", hasBtPermissions() ? "Bluetooth autorizado. Toque em Buscar relógios." : "Permissão Bluetooth não concedida.");
+        if (req == REQ_BT) js("onBtStatus", hasBtPermissions() ? "Bluetooth autorizado. Toque em Buscar T800." : "Permissão Bluetooth não concedida.");
     }
 
     @Override protected void onActivityResult(int req, int res, Intent data) {
-        try {
-            IntentResult qr = IntentIntegrator.parseActivityResult(req, res, data);
-            if (qr != null) {
-                if (qr.getContents() != null) js("onQrScanned", qr.getContents()); else js("onQrError", "Leitura de QR cancelada.");
-                return;
-            }
-        } catch (Throwable ignored) {}
         super.onActivityResult(req, res, data);
         if (req == REQ_FILE && chooser != null) {
             Uri[] out = null;
@@ -401,6 +464,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         stopScanInternal(); safeCloseGatt(); handler.removeCallbacksAndMessages(null);
+        try { unregisterReceiver(bondReceiver); } catch (Throwable ignored) {}
         if (webView != null) {
             try { webView.removeJavascriptInterface("MusyFitBridge"); webView.stopLoading(); webView.destroy(); } catch (Throwable ignored) {}
             webView = null;
