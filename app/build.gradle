@@ -7,11 +7,10 @@ android {
         applicationId 'com.musyfit.watch'
         minSdk 23
         targetSdk 35
-        versionCode 22
-        versionName '2.1'
+        versionCode 30
+        versionName '3.0'
     }
 }
-
 
 dependencies {
     implementation 'com.journeyapps:zxing-android-embedded:4.3.0'

@@ -1,40 +1,23 @@
-# MusyFit Watch V2.1
+# MusyFit Watch 3.0
 
-Aplicativo Android companheiro para o Redmi Watch 5 Active.
+Aplicativo Android companheiro para personalização e diagnóstico de smartwatches, com foco inicial em:
+- Redmi Watch 5 Active
+- T800 Ultra2
 
-## Novidades da V2.1
-- 10 temas MusyFit.
-- Minha Foto com pré-visualização.
-- Busca de dispositivos Bluetooth Low Energy (BLE).
-- Permissões Bluetooth para Android 12+ e compatibilidade com Android 8+.
-- Conexão GATT ao relógio e descoberta dos serviços/characteristics disponíveis.
-- Tela de status de conexão em tempo real.
-- Estrutura pronta para implementar o transporte de mostradores quando o protocolo compatível for identificado.
+## Entregue nesta versão
+- 10 temas oficiais MusyFit: Tech Future, Luxury Black, Neon Cyber, Sport Pro, Racing, Tactical, Minimal, Space, Executive e Minha Foto.
+- Pré-visualização em 320x385.
+- Editor Minha Foto com zoom, posição, tamanho e estilo de hora.
+- Exportação PNG para `Fotos/MusyFit Watch`.
+- Busca BLE multi-relógio.
+- Validação real GATT: o app só mostra conectado após descoberta de serviços.
+- Leitura do serviço padrão de bateria quando o relógio o expõe.
+- Diagnóstico de serviços/características GATT, incluindo canais graváveis e notificáveis.
+- QR scanner + gerador de QR.
+- Atalhos para Mi Fitness (Redmi) e HIwatch Pro (T800 Ultra2).
 
-## Importante sobre sincronização
-O Redmi Watch 5 Active usa o Mi Fitness para pareamento e sincronização oficial. Esta V2.1 cria uma conexão BLE própria e descobre os serviços expostos pelo relógio, mas **não envia um watch face por um UUID inventado**. O envio direto será implementado somente depois que o serviço, as characteristics, autenticação e formato do pacote forem validados no dispositivo real.
-
-## Teste no relógio
-1. Instale o APK no celular Android.
-2. Deixe o Redmi Watch 5 Active ligado e próximo.
-3. Abra MusyFit Watch > Conectar ao relógio.
-4. Autorize Bluetooth.
-5. Toque em Buscar relógio.
-6. Selecione o Redmi Watch encontrado e toque em Conectar.
-7. O app mostrará a quantidade de serviços BLE descobertos.
+## Limite técnico importante
+Conectar por Bluetooth não autoriza automaticamente a transferência de um mostrador. Redmi Watch 5 Active e T800 Ultra2 usam protocolos de transferência específicos do fabricante/firmware. Esta versão não envia bytes arbitrários para características desconhecidas, evitando travamentos ou corrupção do relógio. Ela prepara/exporta o tema, valida a conexão e mostra os canais disponíveis para o próximo estágio de compatibilidade.
 
 ## GitHub Actions
-Suba a pasta inteira para o GitHub e execute **Build MusyFit Watch APK** em Actions. O APK fica no artifact `MusyFit-Watch-APK`.
-
-
-## QR Code
-- Leitor QR usando a câmera do celular.
-- Gerador QR para links/códigos do MusyFit.
-- Pode ler QR exibido pelo relógio para análise/importação futura.
-- O Redmi Watch 5 Active não aceita instalação de APK Android por QR; o recurso não simula essa capacidade.
-
-## V2.2 — Ícone oficial
-- Ícone oficial MusyFit Watch incluído no APK.
-- Recursos mipmap para mdpi, hdpi, xhdpi, xxhdpi e xxxhdpi.
-- Ícone redondo configurado no AndroidManifest.
-- Mantém Bluetooth BLE, QR Code, 10 temas, Minha Foto e pré-visualização da V2.1.
+Use `.github/workflows/android.yml` ou o arquivo `android-v3.yml` fornecido separadamente. O APK debug aparecerá em Artifacts.
