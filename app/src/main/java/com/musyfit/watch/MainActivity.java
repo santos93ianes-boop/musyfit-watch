@@ -25,7 +25,17 @@ import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.util.Base64;
 
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.MultiFormatWriter;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
+
+import java.io.ByteArrayOutputStream;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -161,6 +171,28 @@ public class MainActivity extends Activity {
         catch (SecurityException e) { js("onBtStatus", "Permissão Bluetooth necessária."); }
       });
     }
+    @JavascriptInterface public void scanQr() {
+      runOnUiThread(() -> {
+        IntentIntegrator integrator = new IntentIntegrator(MainActivity.this);
+        integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE);
+        integrator.setPrompt("Aponte para o QR Code");
+        integrator.setBeepEnabled(true);
+        integrator.setOrientationLocked(false);
+        integrator.initiateScan();
+      });
+    }
+    @JavascriptInterface public String generateQr(String text) {
+      if (text == null || text.trim().isEmpty()) return "";
+      try {
+        BitMatrix matrix = new MultiFormatWriter().encode(text, BarcodeFormat.QR_CODE, 720, 720);
+        Bitmap bmp = Bitmap.createBitmap(720, 720, Bitmap.Config.RGB_565);
+        for (int x = 0; x < 720; x++) for (int y = 0; y < 720; y++)
+          bmp.setPixel(x, y, matrix.get(x,y) ? Color.BLACK : Color.WHITE);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        bmp.compress(Bitmap.CompressFormat.PNG, 100, out);
+        return "data:image/png;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
+      } catch (Exception e) { return ""; }
+    }
     @JavascriptInterface public void disconnect() {
       runOnUiThread(() -> {
         if (gatt != null) { try { if (hasBtPermissions()) gatt.disconnect(); gatt.close(); } catch(Exception ignored){} gatt = null; }
@@ -182,6 +214,11 @@ public class MainActivity extends Activity {
   }
 
   @Override protected void onActivityResult(int req, int res, Intent data) {
+    IntentResult qr = IntentIntegrator.parseActivityResult(req, res, data);
+    if (qr != null && qr.getContents() != null) {
+      js("onQrScanned", qr.getContents());
+      return;
+    }
     super.onActivityResult(req,res,data);
     if(req==REQ_FILE && chooser!=null) {
       Uri[] out=null;
